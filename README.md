@@ -39,17 +39,18 @@ Sinovi is a secure platform designed to protect National ID and Passport images 
    ```bash
    git clone <repository-url>
    cd sinovi
+   ```
 2. Install dependencies:
    ```bash
    composer install
    npm install
-   ``
+   ```
 3. Configure the .env file:
 
     i. Set the database connection details in the .env file.
     ```bash
     cp .env.example .env
-    
+    ```
     ii. Set the required variables, including an AES encryption key, Mailtrap credentials, and database configuration (leave the password field empty).
         Use the following sample configuration:
         .env File Configuration:
@@ -78,18 +79,18 @@ Sinovi is a secure platform designed to protect National ID and Passport images 
     iii. Generate a new Application Key in the .env file:
         ```bash
         php artisan key:generate
-       
+       ```
     iv. Migrate the database:
         ```bash
         php artisan migrate
-        
+        ```
     v. Seed the database:
         ```bash
         php artisan db:seed
-        
+        ```
     vi. Run the application:
         ```bash
         php artisan serve
-        
+        ```
 
 
