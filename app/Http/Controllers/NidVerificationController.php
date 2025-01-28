@@ -6,9 +6,8 @@ use App\Models\NidVerification;
 use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Intervention\Image\Drivers\Gd\Driver;
-use Intervention\Image\Geometry\Factories\RectangleFactory;
-use Intervention\Image\ImageManager;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use thiagoalessio\TesseractOCR\TesseractOCR;
 
 class NidVerificationController extends Controller
@@ -25,141 +24,137 @@ class NidVerificationController extends Controller
             'nid_number' => 'required|string',
         ]);
 
+        $user = Auth::user();
         $image = $request->file('nid_image');
-        $inputNidNumber = $request->input('nid_number');
+        $inputNidNumber = trim($request->input('nid_number'));
+
+        // Check if the user already has an NID verification
+        if ($this->userHasNidVerification($user->email)) {
+            return redirect()->route('dashboard')->with('error', 'You have already uploaded an NID. Only one NID per user is allowed.');
+        }
+
+        // Check if the NID number already exists
+        if ($this->nidExists($inputNidNumber)) {
+            return redirect()->route('dashboard')->with('error', 'This NID has already been verified and uploaded.');
+        }
 
         try {
             // Perform OCR on the uploaded image
             $ocr = new TesseractOCR($image->path());
-            $ocr->executable('C:\\Program Files\\Tesseract-OCR\\tesseract.exe'); // Adjust path if necessary
+            $ocr->executable('C:\\Program Files\\Tesseract-OCR\\tesseract.exe');
             $extractedText = $ocr->run();
 
-            // Define patterns for NID and Passport extraction
-            $pattern_id = '/IDNO\s*:\s*(\d+)/';
-            $pattern_passport = '/Passport No\.\s*([A-Z]{2}\d{7})/';
+            // Define pattern for NID extraction
+            $pattern_id = '/(\d{3})\s+(\d{3})\s+(\d{4})/';
 
-            // Extract NID and Passport numbers from OCR result
+            // Extract NID number from OCR result
             preg_match($pattern_id, $extractedText, $nidMatches);
-            $extractedNidNumber = $nidMatches[1] ?? null;
+            $extractedNidNumber = isset($nidMatches[1], $nidMatches[2], $nidMatches[3])
+                ? "$nidMatches[1]$nidMatches[2]$nidMatches[3]"
+                : null;
 
-            preg_match($pattern_passport, $extractedText, $passportMatches);
-            $extractedPassportNumber = $passportMatches[1] ?? null;
+            // dd($extractedNidNumber);
 
-            // Handle NID and Passport verification cases
+            // Handle NID verification
             if ($extractedNidNumber && $extractedNidNumber === $inputNidNumber) {
-                $censoredImagePath = $this->createCensoredImage($image, 'nid', $extractedNidNumber);
-
+                $censoredImagePath = nidCensoredImage($image, 'nid', $inputNidNumber);
+                // dd($censoredImagePath);
                 // Save verified NID data to the database
-                NidVerification::create([
-                    'nid_number' => $this->aesEncrypt($inputNidNumber),
-                    'email' => Auth::user()->email,
-                    'encrypted_image' => $this->aesEncrypt(file_get_contents($image->path())),
-                    'censored_image_path' => $censoredImagePath, // Encrypting the image path
-                ]);
+                $this->saveVerificationData($inputNidNumber, $image, $censoredImagePath, $user->email);
 
                 return redirect()->route('dashboard')->with([
-                    'success' => 'NID verified and saved successfully.',
+                    'success' => 'NID verification successful.',
                     'extractedNidNumber' => $extractedNidNumber,
-                ]);
-            } elseif ($extractedPassportNumber && $extractedPassportNumber === $inputNidNumber) {
-                $censoredImagePath = $this->createCensoredImage($image, 'passport', $extractedPassportNumber);
-
-                // Save verified Passport data to the database
-                NidVerification::create([
-                    'nid_number' => $this->aesEncrypt($inputNidNumber),
-                    'email' => Auth::user()->email,
-                    'encrypted_image' => $this->aesEncrypt(file_get_contents($image->path())),
-                    'censored_image_path' => $censoredImagePath, // Encrypting the image path
-                ]);
-
-                return redirect()->route('dashboard')->with([
-                    'success' => 'Passport verified and saved successfully.',
-                    'extractedPassportNumber' => $extractedPassportNumber,
                 ]);
             } else {
                 return redirect()->route('dashboard')->with([
-                    'error' => 'Verification failed. Numbers do not match.',
+                    'error' => 'Verification failed. NID number does not match.',
                     'extractedNidNumber' => $extractedNidNumber ?? 'No NID detected',
-                    'extractedPassportNumber' => $extractedPassportNumber ?? 'No Passport detected',
                 ]);
             }
         } catch (Exception $e) {
-            return redirect()->route('dashboard')->with('error', 'An error occurred: ' . $e->getMessage());
+            dd('NID Verification Error: ' . $e->getMessage());
+            return redirect()->route('dashboard')->with('error', 'An error occurred during verification. Please try again.');
         }
     }
 
-    /**
-     * Create a censored image with the extracted NID/Passport number.
-     */
-    private function createCensoredImage($image, $type, $number)
+    private function userHasNidVerification($email)
     {
-        $manager = new ImageManager(new Driver());
-        $img = $manager->read($image->path());
-
-        $width = $img->width();
-        $height = $img->height();
-
-        if ($type === 'nid') {
-            // NID: Censor only after ID NO
-            $leftOffset = intval($width * 0.09); // Adjust this value for left margin
-            $bottomOffset = intval($height * 0.05); // Adjust this value for bottom margin
-
-            $x = intval($width * 0.5) - $leftOffset; // Move left by leftOffset
-            $y = intval($height * 0.8) + $bottomOffset; // Move down by bottomOffset
-            $rectWidth = intval($width * 0.45);
-            $rectHeight = intval($height * 0.1);
-
-            $img->drawRectangle($x, $y, function (RectangleFactory $rectangle) use ($rectWidth, $rectHeight) {
-                $rectangle->size($rectWidth, $rectHeight);
-                $rectangle->background('#000000');
-            });
-
-        } else {
-            // Passport: Censor top right and bottom full
-            // Top right rectangle
-            $topMargin = intval($height * 0.1);
-
-            $x1 = intval($width * 0.6);
-            $y1 = 0.3 + $topMargin;
-            $rectWidth1 = intval($width * 0.3);
-            $rectHeight1 = intval($height * 0.3);
-
-            $img->drawRectangle($x1, $y1, function (RectangleFactory $rectangle) use ($rectWidth1, $rectHeight1) {
-                $rectangle->size($rectWidth1, $rectHeight1);
-                $rectangle->background('#000000');
-            });
-
-            // Bottom full rectangle
-            $x2 = 0;
-            $y2 = intval($height * 0.8);
-            $rectWidth2 = $width;
-            $rectHeight2 = intval($height * 0.2);
-
-            $img->drawRectangle($x2, $y2, function (RectangleFactory $rectangle) use ($rectWidth2, $rectHeight2) {
-                $rectangle->size($rectWidth2, $rectHeight2);
-                $rectangle->background('#000000');
-            });
-        }
-
-        $censoredImagePath = 'uploads/' . time() . '_censored.jpg';
-
-        $img->encodeByPath(public_path($censoredImagePath), progressive: true, quality: 100);
-        $img->save(public_path($censoredImagePath));
-
-        return $censoredImagePath;
+        return NidVerification::where('email', $email)->exists();
     }
 
-    /**
-     * Encrypt the given data using AES-256 encryption.
-     */
+    private function nidExists($nidNumber)
+    {
+        $nidVerifications = NidVerification::all();
+        foreach ($nidVerifications as $verification) {
+            $decryptedNid = $this->aesDecrypt($verification->nid_number);
+            if ($decryptedNid === $nidNumber) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function saveVerificationData($inputNidNumber,$image, $censoredImagePath, $email)
+    {
+        try {
+            $savedImageInfo = $this->saveImage($image);
+            NidVerification::updateOrCreate(
+                ['email' => $email],
+                [
+                    'nid_number' => $this->aesEncrypt($inputNidNumber),
+                    'encrypted_image' => $this->aesEncrypt($savedImageInfo['name']),
+                    'censored_image_path' => $censoredImagePath,
+                ]
+            );
+
+            return [
+                'image_name' => $savedImageInfo['name'],
+                'image_path' => $savedImageInfo['path'],
+            ];
+        } catch (Exception $e) {
+            Log::error('Error in saveVerificationData: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    private function saveImage($image)
+    {
+        try {
+            $uniqueId = Str::uuid()->toString();
+            $timestamp = now()->format('YmdHis');
+            $extension = $image->getClientOriginalExtension();
+            $imageName = "{$uniqueId}_{$timestamp}.{$extension}";
+            $imagePath = 'uploads/' . $imageName;
+            if ($image->move(public_path('uploads'), $imageName)) {
+                return [
+                    'name' => $imageName,
+                    'path' => $imagePath,
+                ];
+            } else {
+                Log::error('Failed to move uploaded image: ' . $imageName);
+                return null;
+            }
+        } catch (Exception $e) {
+            Log::error('Error saving image: ' . $e->getMessage());
+            return null;
+        }
+    }
+
     private function aesEncrypt($data)
     {
-        $encryptionKey = env('AES_ENCRYPTION_KEY'); // Set your encryption key in the .env file
-        $cipher = "AES-256-CBC"; // AES encryption with CBC mode
-        $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length($cipher)); // Generate an initialization vector
-        $encryptedData = openssl_encrypt($data, $cipher, $encryptionKey, 0, $iv); // Encrypt the data
+        $encryptionKey = env('AES_ENCRYPTION_KEY');
+        $cipher = "AES-256-CBC";
+        $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length($cipher));
+        $encryptedData = openssl_encrypt($data, $cipher, $encryptionKey, 0, $iv);
+        return base64_encode($encryptedData . '::' . base64_encode($iv));
+    }
 
-        // Combine encrypted data with IV for storage or transmission
-        return base64_encode($encryptedData . '::' . base64_encode($iv)); // Store as base64
+    private function aesDecrypt($encryptedData)
+    {
+        $encryptionKey = env('AES_ENCRYPTION_KEY');
+        $cipher = "AES-256-CBC";
+        list($encryptedData, $iv) = explode('::', base64_decode($encryptedData), 2);
+        return openssl_decrypt($encryptedData, $cipher, $encryptionKey, 0, base64_decode($iv));
     }
 }

@@ -1,22 +1,11 @@
 <?php
 
-namespace App\Models;
-
 use Intervention\Image\ImageManager;
-use Illuminate\Database\Eloquent\Model;
 use Intervention\Image\Drivers\Gd\Driver;
 use Intervention\Image\Geometry\Factories\RectangleFactory;
 
-class NidVerification extends Model
-{
-    /**
-     * The attributes that aren't mass assignable.
-     *
-     * @var array
-     */
-    protected $guarded = [];
-
-    public function nidCensoredImage($image, $type, $number)
+if (!function_exists('nidCensoredImage')) {
+    function nidCensoredImage($image, $type, $number)
     {
         $manager = new ImageManager(new Driver());
         $img = $manager->read($image->path());
@@ -38,12 +27,10 @@ class NidVerification extends Model
                 $rectangle->background('#000000');
             });
         } else {
-            // Passport: Censor top right and bottom full
-            // Top right rectangle
             $topMargin = intval($height * 0.1);
 
             $x1 = intval($width * 0.6);
-            $y1 = 0.3 + $topMargin;
+            $y1 = intval($height * 0.3) + $topMargin;
             $rectWidth1 = intval($width * 0.3);
             $rectHeight1 = intval($height * 0.3);
 
@@ -52,7 +39,6 @@ class NidVerification extends Model
                 $rectangle->background('#000000');
             });
 
-            // Bottom full rectangle
             $x2 = 0;
             $y2 = intval($height * 0.8);
             $rectWidth2 = $width;
